@@ -1,0 +1,65 @@
+{
+  "name": "bikesetup",
+  "private": true,
+  "version": "0.1.0",
+  "description": "BIKESETUP — локальный гараж и калькулятор настройки велосипедной подвески",
+  "author": "Bikesetup",
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "desktop": "npm run build && electron .",
+    "dist:exe": "npm run build && electron-builder --win portable"
+  },
+  "dependencies": {
+    "clsx": "^2.1.1",
+    "lz-string": "^1.5.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.6.2",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/lz-string": "^1.3.34",
+    "@types/react": "^19.1.6",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.5.0",
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0",
+    "tailwindcss": "^4.1.8",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.bikesetup.app",
+    "productName": "BIKESETUP",
+    "copyright": "BIKESETUP",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "portable": {
+      "artifactName": "BIKESETUP-${version}-portable.exe"
+    }
+  }
+}

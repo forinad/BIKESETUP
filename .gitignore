@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+smoke-*.json
+*.log
+*.zip
+.DS_Store
+Thumbs.db
+
+# Служебные файлы редакторов и локальные настройки
+.vscode/
+.idea/
+*.local
+.env
+.env.*

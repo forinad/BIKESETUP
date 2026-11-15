@@ -8,6 +8,17 @@ export type WheelSize = 26 | 27.5 | 29 | 700
 export type SpringKind = 'air' | 'coil' | 'rigid'
 export type RearKind = 'none' | 'air' | 'coil'
 
+/**
+ * Как покрышка посажена на обод. Влияет на рекомендуемое давление:
+ * камера требует запаса, бескамерка — базовый расчёт, трубка держит форму сама.
+ */
+export type TireSetup =
+  | 'tube'
+  | 'tube-light'
+  | 'tubeless'
+  | 'tubeless-hookless'
+  | 'tubular'
+
 export type LinkageType =
   | 'single-pivot'
   | 'four-bar'
@@ -57,6 +68,8 @@ export interface WheelSpec {
   /** Ширина покрышки в мм (2.4" ≈ 61 мм). */
   widthMm: number
   insert: boolean
+  /** Тип посадки покрышки. Не указан — считаем бескамерку (прежнее поведение). */
+  tireSetup?: TireSetup
 }
 
 export interface ForkSpec {
@@ -189,6 +202,11 @@ export interface TireResult {
   psi: number
   bar: number
   insert: boolean
+  setup: TireSetup
+  /** Полное название посадки — для карточки и объяснений. */
+  setupLabel: string
+  /** Короткая метка — для бейджа. */
+  setupShort: string
 }
 
 export interface CockpitResult {

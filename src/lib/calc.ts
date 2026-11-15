@@ -23,9 +23,9 @@ import {
   getFork,
   getShock,
 } from '../data/components'
-import { getWeatherMeta } from '../data/presets'
+import { getTireSetup, getWeatherMeta } from '../data/presets'
 
-export const ENGINE_VERSION = '1.4.2'
+export const ENGINE_VERSION = '1.5.0'
 
 const KG_TO_LB = 2.2046226
 const MM_PER_IN = 25.4
@@ -33,6 +33,8 @@ const MM_PER_IN = 25.4
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
 const roundTo = (v: number, step = 1) => Math.round(v / step) * step
 const n = (v: number, digits = 0) => Number(v.toFixed(digits)).toString()
+/** Слагаемое со знаком: «+ 2.0» / «− 1.2» — чтобы формулы читались с отрицательными поправками. */
+const sgn = (v: number, digits = 1) => `${v < 0 ? '−' : '+'} ${n(Math.abs(v), digits)}`
 
 /**
  * Влияние диаметра ног на давление. Сила воздушной пружины = давление × площадь поршня,
@@ -197,10 +199,22 @@ function tirePressure(
   weather: Weather,
   which: 'front' | 'rear',
   frontWidthIn: number,
-): { psi: number; widthIn: number; parts: { base: number; width: number; wheel: number; disc: number; grip: number; weather: number; temp: number; insert: number; rear: number } } {
+  /** Отношение нагрузки на это колесо к нагрузке в нейтральной стойке. */
+  loadFactor: number,
+): {
+  psi: number
+  widthIn: number
+  setup: ReturnType<typeof getTireSetup>
+  parts: { base: number; load: number; width: number; wheel: number; disc: number; grip: number; weather: number; temp: number; setup: number; insert: number; rear: number }
+} {
   const widthIn = wheel.widthMm / MM_PER_IN
+  const setupMeta = getTireSetup(wheel.tireSetup)
   // База калибрована по бескамерным таблицам (Stan's и др.): для 64 кг ≈ 24–25 psi перед.
   const base = 0.3 * riderKg + 5.5
+  // Давление держит вес: при переносе ЦМ вперёд переднее колесо нагружается,
+  // и шине нужно больше давления. Пятно контакта тоже подрастает, поэтому
+  // отклик не линейный — берём степень 0.7.
+  const load = base * (Math.pow(clamp(loadFactor, 0.75, 1.3), 0.7) - 1)
   const width = (2.4 - widthIn) * 5.0
   const wheelPart = wheelAdj(wheel.size)
   const disc = DISCIPLINES[discipline].tireAdj
@@ -209,12 +223,19 @@ function tirePressure(
   const weatherPart = w.tireAdj
   // На холоде давление в шине падает (P ∝ T): добавляем до 3 psi.
   const temp = clamp((20 - weather.tempC) * 0.1, -3, 3)
-  const insert = wheel.insert ? -2 : 0
+  const setupPart = setupMeta.psiAdj
+  // Вставка работает только внутри бескамерки/трубки, с камерой её не ставят.
+  const insert = wheel.insert && setupMeta.allowsInsert ? -2 : 0
   const rear = which === 'rear' ? 2 - (widthIn - frontWidthIn) * 2 : 0
 
-  const raw = base + width + wheelPart + disc + grip + weatherPart + temp + insert + rear
+  const raw = base + load + width + wheelPart + disc + grip + weatherPart + temp + setupPart + insert + rear
   const psi = clamp(Math.round(raw * 2) / 2, 9, 60)
-  return { psi, widthIn, parts: { base, width, wheel: wheelPart, disc, grip, weather: weatherPart, temp, insert, rear } }
+  return {
+    psi,
+    widthIn,
+    setup: setupMeta,
+    parts: { base, load, width, wheel: wheelPart, disc, grip, weather: weatherPart, temp, setup: setupPart, insert, rear },
+  }
 }
 
 export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather: Weather): CalcResult {
@@ -226,6 +247,15 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   // RockShox/Fox для воздушных вилок и амортов (вес байка туда не входит).
   const riderInGearKg = rider.weightKg + rider.gearKg
   const balance = weightBalance(bike, totalKg, params.position)
+  // Давление в пружине должно держать реальную нагрузку на колесо. Считаем
+  // отношение к нейтральной стойке, чтобы калибровка «psi ≈ вес» осталась той же,
+  // а ползунок позиции реально менял давление спереди и сзади.
+  const neutralBalance = weightBalance(bike, totalKg, 0)
+  const frontLoadRaw = balance.frontKg / Math.max(1, neutralBalance.frontKg)
+  const rearLoadRaw = balance.rearKg / Math.max(1, neutralBalance.rearKg)
+  // Райдер частично разгружает колесо работой тела, поэтому отклик мягче прямого.
+  const frontLoadF = clamp(Math.pow(frontLoadRaw, 0.85), 0.75, 1.3)
+  const rearLoadF = clamp(Math.pow(rearLoadRaw, 0.85), 0.75, 1.3)
 
   const forkModel = getFork(bike.fork.modelId)
   const shockModel = getShock(bike.rear.modelId)
@@ -258,11 +288,13 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       // Давление калибруется по ВЕСУ РАЙДЕРА В ЭКИПЕ (как в таблицах RockShox/Fox),
       // а не по общему весу с байком. База ≈ 1 psi на 1 кг для 36-мм ноги:
       // тоньше нога (32 мм) — давление выше, толще (38–40 мм) — ниже.
+      // Множитель нагрузки учитывает стойку: сдвиг ЦМ вперёд грузит вилку.
       rawPressure =
         riderInGearKg *
         stanchionFactor(bike.fork.stanchionMm) *
         brandFactor *
         (1 + (0.5 - params.feel) * 0.1) *
+        frontLoadF *
         tempForkFactor
       pressure = clamp(roundTo(rawPressure, 1), 15, 200)
       if (rawPressure < 15 || rawPressure > 200) {
@@ -326,9 +358,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       explain.push({
         id: 'fork-pressure',
         title: 'Давление в вилке',
-        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (0.5 - params.feel) * 0.1, 2)} (стиль) × ${n(tempForkFactor, 3)} (темп. ${weather.tempC} °C) = ${n(rawPressure)} psi`,
+        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (0.5 - params.feel) * 0.1, 2)} (стиль) × ${n(frontLoadF, 3)} (нагрузка перед) × ${n(tempForkFactor, 3)} (темп. ${weather.tempC} °C) = ${n(rawPressure)} psi`,
         result: `${pressure} psi ≈ ${n(pressure * 0.0689476, 1)} bar`,
-        hint: 'Стартовый ориентир от веса в экипировке и площади ноги. Точное давление индивидуально для каждой вилки — доведите сэг до целевого, добавляя по 5 psi.',
+        hint: `Стартовый ориентир от веса в экипировке, площади ноги и нагрузки на переднее колесо (${n(balance.frontKg, 1)} кг в текущей стойке). Точное давление индивидуально для каждой вилки — доведите сэг до целевого, добавляя по 5 psi.`,
       })
     }
 
@@ -374,7 +406,8 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
         Math.pow(65 / stroke, 0.7) *
         Math.pow(2.5 / lr, 0.35) *
         Math.pow(0.28 / sagPct, 0.9) *
-        progressF
+        progressF *
+        rearLoadF
       pressure = clamp(roundTo(raw, 5), 40, 360)
       if (raw < 40 || raw > 360) {
         warnings.push({ level: 'warn', text: 'Давление аморта вышло за рабочий диапазон — проверьте ход штока и рычажность.' })
@@ -382,9 +415,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       explain.push({
         id: 'shock-pressure',
         title: 'Давление в аморте',
-        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} = ${n(raw)} psi`,
+        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) = ${n(raw)} psi`,
         result: `${pressure} psi ≈ ${n(pressure * 0.0689476, 1)} bar`,
-        hint: 'Чем короче шток и ниже рычажность, тем выше давление. Вес байка в расчёте не участвует.',
+        hint: `Чем короче шток и ниже рычажность, тем выше давление. Вес байка в расчёте не участвует, но нагрузка на заднее колесо (${n(balance.rearKg, 1)} кг) — участвует.`,
       })
     } else {
       const ideal =
@@ -392,14 +425,15 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
         totalLb *
         Math.pow(lr / 2.5, 0.9) *
         Math.pow(0.3 / sagPct, 0.7) *
-        d.coilFactor
+        d.coilFactor *
+        rearLoadF
       idealSpring = roundTo(ideal, 5)
       const springs = shockModel?.springs?.length ? shockModel.springs : SPRING_STOCK
       springRate = springs.reduce((a, b) => (Math.abs(b - ideal) < Math.abs(a - ideal) ? b : a), springs[0])
       explain.push({
         id: 'shock-spring',
         title: 'Жёсткость пружины',
-        formula: `2.06 × ${n(totalLb)} lb × (${n(lr, 2)}/2.5)^0.9 × (30/${n(sagPct * 100, 1)})^0.7 × ${n(d.coilFactor, 2)} = ${n(ideal)} lb/in`,
+        formula: `2.06 × ${n(totalLb)} lb × (${n(lr, 2)}/2.5)^0.9 × (30/${n(sagPct * 100, 1)})^0.7 × ${n(d.coilFactor, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) = ${n(ideal)} lb/in`,
         result: `${springRate} lb/in · расчётная ${idealSpring}`,
         hint: `Ближайшая из доступных пружин. Идеал ≈ ${idealSpring} lb/in, ставьте ближайшую по таблице производителя.`,
       })
@@ -462,6 +496,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
     weather,
     'front',
     bike.wheels.front.widthMm / MM_PER_IN,
+    frontLoadRaw,
   )
   const rearTireRaw = tirePressure(
     bike.wheels.rear,
@@ -471,6 +506,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
     weather,
     'rear',
     bike.wheels.front.widthMm / MM_PER_IN,
+    rearLoadRaw,
   )
 
   const tires: CalcResult['tires'] = {
@@ -480,6 +516,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       psi: frontTireRaw.psi,
       bar: Math.round(frontTireRaw.psi * 0.0689476 * 10) / 10,
       insert: bike.wheels.front.insert,
+      setup: frontTireRaw.setup.id,
+      setupLabel: frontTireRaw.setup.label,
+      setupShort: frontTireRaw.setup.short,
     },
     rear: {
       size: bike.wheels.rear.size,
@@ -487,6 +526,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       psi: rearTireRaw.psi,
       bar: Math.round(rearTireRaw.psi * 0.0689476 * 10) / 10,
       insert: bike.wheels.rear.insert,
+      setup: rearTireRaw.setup.id,
+      setupLabel: rearTireRaw.setup.label,
+      setupShort: rearTireRaw.setup.short,
     },
   }
 
@@ -494,9 +536,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   explain.push({
     id: 'tires',
     title: 'Давление в шинах',
-    formula: `0.30×${n(riderInGearKg, 1)} (в экипе) + 5.5 + (2.4−${n(frontTireRaw.widthIn, 1)})×5 + ${n(ft.wheel, 1)} (колесо) + ${n(ft.disc, 1)} (дисциплина) + ${n(ft.grip, 1)} (грип) + ${n(ft.weather, 1)} (погода) + ${n(ft.temp, 1)} (темп.) = ${n(tires.front.psi, 1)} psi`,
+    formula: `база 0.30×${n(riderInGearKg, 1)} + 5.5 = ${n(ft.base, 1)} psi · нагрузка ${sgn(ft.load)} · ширина ${sgn(ft.width)} (2.4−${n(frontTireRaw.widthIn, 1)}″) · колесо ${sgn(ft.wheel)} · дисциплина ${sgn(ft.disc)} · грип ${sgn(ft.grip)} · тип ${sgn(ft.setup)} (${frontTireRaw.setup.short}) · погода ${sgn(ft.weather)} · темп. ${sgn(ft.temp)} = ${n(tires.front.psi, 1)} psi`,
     result: `перед ${n(tires.front.psi, 1)} / зад ${n(tires.rear.psi, 1)} psi`,
-    hint: `Это стартовые значения для бескамерки. ${weatherMeta.note}`,
+    hint: `Перед: ${frontTireRaw.setup.label.toLowerCase()}. Зад: ${rearTireRaw.setup.label.toLowerCase()}. ${frontTireRaw.setup.note} ${weatherMeta.note}`,
   })
 
   // ─────────────────────────────── КОКПИТ ───────────────────────────────
@@ -557,6 +599,18 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   if (!bike.geometry.wheelbaseMm || !bike.geometry.chainstayMm) {
     warnings.push({ level: 'warn', text: 'Без базы и длины перьев развесовка будет приблизительной. Заполните геометрию.' })
   }
+  for (const [where, wheel] of [
+    ['переднем', bike.wheels.front],
+    ['заднем', bike.wheels.rear],
+  ] as const) {
+    const meta = getTireSetup(wheel.tireSetup)
+    if (wheel.insert && !meta.allowsInsert) {
+      warnings.push({
+        level: 'info',
+        text: `Вставка на ${where} колесе не ставится с вариантом «${meta.label}» — поправка −2 psi не применена.`,
+      })
+    }
+  }
 
   // ─────────────────────────────── ПОГОДА ───────────────────────────────
   const sagShift = sagShiftPct(weather.tempC)
@@ -593,7 +647,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
     title: 'Развесовка',
     formula: `(${n(Math.sqrt(Math.max(1, bike.geometry.chainstayMm ** 2 - bike.geometry.bbDropMm ** 2)))}) перья + смещение ЦМ ${n(balance.comShiftMm)} мм) / база ${bike.geometry.wheelbaseMm} мм`,
     result: `перед ${n(balance.frontShare * 100, 1)}% · зад ${n(balance.rearShare * 100, 1)}%`,
-    hint: 'Ползунок позиции сдвигает ЦМ на ±60 мм — это меняет давление в вилке и аморте.',
+    hint: 'Ползунок позиции сдвигает ЦМ на ±60 мм: это меняет нагрузку на колёса, а вместе с ней — давление в вилке, аморте и шинах.',
   })
 
   const frontPct = Math.round(balance.frontShare * 1000) / 10

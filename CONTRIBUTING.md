@@ -17,5 +17,5 @@ npm.cmd run dist:exe # сборка портативного .exe в release/
 > На Windows с ограниченной политикой выполнения PowerShell используйте `npm.cmd`
 > вместо `npm`.
 
-- Портативный `.exe` собирается в `release\BIKESETUP-0.1.0-portable.exe` (~105 МБ).
+- Портативный `.exe` собирается в `release\BIKESETUP-0.1.1-portable.exe` (~105 МБ).
   Внутри Electron + Chromium.

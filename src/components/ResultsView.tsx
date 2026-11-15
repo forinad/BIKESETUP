@@ -1,7 +1,7 @@
 import type { Bike, CalcResult, Rider, SetupParams, SharedPayload, Weather } from '../types'
 import type { CalcResult as Result } from '../types'
 import { DISCIPLINES } from '../data/disciplines'
-import { getWeatherMeta } from '../data/presets'
+import { getTireSetup, getWeatherMeta } from '../data/presets'
 import { disciplineLabel, widthLabel, wheelLabel } from '../lib/format'
 import { Badge, Divider, Panel, SectionTitle } from './ui/Panel'
 import { BalanceBar, ClickGrid, Metric, SagBar } from './Metrics'
@@ -258,9 +258,13 @@ function TiresCard({ result }: { result: CalcResult }) {
     { key: 'front', label: 'Перед', data: result.tires.front },
     { key: 'rear', label: 'Зад', data: result.tires.rear },
   ] as const
+  const sameSetup = result.tires.front.setup === result.tires.rear.setup
+  const setupBadge = sameSetup
+    ? result.tires.front.setupShort
+    : `${result.tires.front.setupShort} / ${result.tires.rear.setupShort}`
   return (
     <Panel className="p-4 sm:p-5">
-      <SectionTitle right={<Badge>TUBELESS</Badge>}>Шины</SectionTitle>
+      <SectionTitle right={<Badge>{setupBadge}</Badge>}>Шины</SectionTitle>
       <div className="mt-4 grid grid-cols-2 gap-4">
         {items.map(({ key, label, data }) => (
           <div key={key} className="panel-flat p-3.5">
@@ -274,13 +278,17 @@ function TiresCard({ result }: { result: CalcResult }) {
               <div>
                 {wheelLabel(data.size)} · {widthLabel(data.widthMm)}
               </div>
-              {data.insert && <div className="text-amber/80">вставка −2 psi</div>}
+              <div>{data.setupShort.toLowerCase()}</div>
+              {data.insert && getTireSetup(data.setup).allowsInsert && (
+                <div className="text-amber/80">вставка −2 psi</div>
+              )}
             </div>
           </div>
         ))}
       </div>
       <p className="mt-3 text-[11px] leading-snug text-dim">
-        Для бескамерки, измерять на улице. На жаре давление растёт, на холоде падает.
+        {sameSetup ? setupBadge : 'Перед и зад посажены по-разному'}: давление под нагрузку на
+        колесо. Измерять на улице — на жаре растёт, на холоде падает.
       </p>
     </Panel>
   )

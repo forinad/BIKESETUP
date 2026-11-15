@@ -8,12 +8,13 @@ import type {
   ForkSpec,
   LinkageType,
   RearSpec,
+  TireSetup,
   WheelSize,
 } from '../types'
 import { DEFAULT_PARAMS, DEFAULT_WEATHER } from '../types'
 import { useApp } from '../lib/store'
 import { uid } from '../lib/id'
-import { createBike, geometryPreset, LINKAGES, suspensionPreset, WHEEL_SIZES } from '../data/presets'
+import { createBike, geometryPreset, getTireSetup, LINKAGES, suspensionPreset, TIRE_SETUPS, WHEEL_SIZES } from '../data/presets'
 import { DISCIPLINE_LIST, DISCIPLINES } from '../data/disciplines'
 import { FORKS, getFork, getShock, SHOCKS, ADJUSTER_ORDER, DEFAULT_FORK_ADJUSTERS, forkAdjusters } from '../data/components'
 import { calcSetup } from '../lib/calc'
@@ -304,6 +305,7 @@ export function BikeEditorPage() {
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               {(['front', 'rear'] as const).map((pos) => {
                 const wheel = draft.wheels[pos]
+                const setupMeta = getTireSetup(wheel.tireSetup)
                 return (
                   <div key={pos} className="panel-flat p-3.5">
                     <div className="eyebrow-plain mb-2 text-[10px] text-muted">
@@ -334,11 +336,33 @@ export function BikeEditorPage() {
                       />
                     </div>
                     <div className="mt-2.5">
+                      <SelectField
+                        label="Тип посадки"
+                        value={wheel.tireSetup ?? 'tubeless'}
+                        onChange={(v) =>
+                          setWheels({
+                            [pos]: {
+                              ...wheel,
+                              tireSetup: v,
+                              // Вставка несовместима с камерой и трубкой — снимаем галочку.
+                              insert: getTireSetup(v).allowsInsert ? wheel.insert : false,
+                            },
+                          } as Partial<Bike['wheels']>)
+                        }
+                        options={TIRE_SETUPS.map((t) => ({ value: t.id as TireSetup, label: t.label }))}
+                        hint={setupMeta.note}
+                      />
+                    </div>
+                    <div className="mt-2.5">
                       <Toggle
                         label="Вставка / CushCore"
                         checked={wheel.insert}
                         onChange={(v) => setWheels({ [pos]: { ...wheel, insert: v } } as Partial<Bike['wheels']>)}
-                        hint="−2 psi к рекомендации"
+                        hint={
+                          setupMeta.allowsInsert
+                            ? '−2 psi к рекомендации'
+                            : `Не применяется: «${setupMeta.label}» — без вставки`
+                        }
                       />
                     </div>
                   </div>

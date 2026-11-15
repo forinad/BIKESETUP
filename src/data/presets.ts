@@ -2,6 +2,7 @@ import type {
   Bike,
   Discipline,
   LinkageType,
+  TireSetup,
   WeatherCondition,
   WheelSize,
 } from '../types'
@@ -26,6 +27,65 @@ export const WEATHER_CONDITIONS: WeatherMeta[] = [
 
 export const getWeatherMeta = (id: WeatherCondition): WeatherMeta =>
   WEATHER_CONDITIONS.find((w) => w.id === id) ?? WEATHER_CONDITIONS[0]
+
+export interface TireSetupMeta {
+  id: TireSetup
+  label: string
+  short: string
+  /** Поправка к базовому давлению бескамерки, psi. */
+  psiAdj: number
+  /** Можно ли ставить вставку (CushCore и подобные). */
+  allowsInsert: boolean
+  note: string
+}
+
+export const TIRE_SETUPS: TireSetupMeta[] = [
+  {
+    id: 'tube',
+    label: 'Камера (butyl)',
+    short: 'TUBE',
+    psiAdj: 2,
+    allowsInsert: false,
+    note: 'Камере нужен запас давления: иначе змеиные проколы на кромке и проворот покрышки.',
+  },
+  {
+    id: 'tube-light',
+    label: 'Камера TPU / латекс',
+    short: 'TPU',
+    psiAdj: 1,
+    allowsInsert: false,
+    note: 'Лёгкая камера катит лучше, но от пробоя не защищает: +1 psi к бескамерной рекомендации.',
+  },
+  {
+    id: 'tubeless',
+    label: 'Бескамерка, крючковатый обод (crochet)',
+    short: 'TUBELESS',
+    psiAdj: 0,
+    allowsInsert: true,
+    note: 'Базовый расчёт: герметик, покрышка держится за крючок обода. Tubeless Ready — то же самое.',
+  },
+  {
+    id: 'tubeless-hookless',
+    label: 'Бескамерка, прямой обод (hookless / TSS)',
+    short: 'HOOKLESS',
+    psiAdj: -0.5,
+    allowsInsert: true,
+    note: 'Прямой обод не имеет крючка: держите давление ниже лимита обода (обычно 5 бар) и чуть ниже обычного.',
+  },
+  {
+    id: 'tubular',
+    label: 'Трубка (tubular)',
+    short: 'TUBULAR',
+    psiAdj: -1,
+    allowsInsert: false,
+    note: 'Трубка приклеена и держит форму сама — можно ехать на меньшем давлении без риска разбортировки.',
+  },
+]
+
+const TIRE_SETUP_FALLBACK = TIRE_SETUPS.find((t) => t.id === 'tubeless')!
+
+export const getTireSetup = (id?: TireSetup): TireSetupMeta =>
+  TIRE_SETUPS.find((t) => t.id === id) ?? TIRE_SETUP_FALLBACK
 
 export interface LinkageMeta {
   id: LinkageType
@@ -266,8 +326,8 @@ export function createBike(discipline: Discipline, id: string, name?: string): B
     size: 'M',
     massKg: p.massKg,
     wheels: {
-      front: { size: p.wheelFront, widthMm: p.tireFrontMm, insert: false },
-      rear: { size: p.wheelRear, widthMm: p.tireRearMm, insert: false },
+      front: { size: p.wheelFront, widthMm: p.tireFrontMm, insert: false, tireSetup: 'tubeless' },
+      rear: { size: p.wheelRear, widthMm: p.tireRearMm, insert: false, tireSetup: 'tubeless' },
     },
     fork: {
       kind: p.forkKind,
@@ -327,6 +387,10 @@ export function geometryPreset(discipline: Discipline) {
 export function suspensionPreset(discipline: Discipline) {
   const p = PRESETS[discipline]
   const d = DISCIPLINES[discipline]
+  const wheels: Bike['wheels'] = {
+    front: { size: p.wheelFront, widthMm: p.tireFrontMm, insert: false, tireSetup: 'tubeless' },
+    rear: { size: p.wheelRear, widthMm: p.tireRearMm, insert: false, tireSetup: 'tubeless' },
+  }
   return {
     fork: {
       kind: p.forkKind,
@@ -348,10 +412,7 @@ export function suspensionPreset(discipline: Discipline) {
       tokens: d.tokensRear,
     },
     massKg: p.massKg,
-    wheels: {
-      front: { size: p.wheelFront, widthMm: p.tireFrontMm, insert: false },
-      rear: { size: p.wheelRear, widthMm: p.tireRearMm, insert: false },
-    },
+    wheels,
   }
 }
 

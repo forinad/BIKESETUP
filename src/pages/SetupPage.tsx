@@ -169,6 +169,10 @@ export function SetupPage() {
                 value={result.shock ? `${result.shock.leverageRatio}:1 · прогрессия ${bike.rear.progressionPct}%` : '—'}
               />
               <Row label="Геометрия" value={`база ${bike.geometry.wheelbaseMm} · перья ${bike.geometry.chainstayMm}`} />
+              <Row
+                label="Посадка шин"
+                value={`${result.tires.front.setupShort.toLowerCase()} / ${result.tires.rear.setupShort.toLowerCase()}`}
+              />
               <Row label="Масса байка" value={`${bike.massKg} кг`} />
             </div>
           <Link to={`/bike/${bike.id}`} className="btn btn-ghost btn-sm mt-3 w-full">
@@ -395,6 +399,18 @@ export function SetupPage() {
                   <span className="text-dim">Нагрузка перед / зад</span>
                   <span className="text-ink">
                     {result.balance.frontKg.toFixed(1)} / {result.balance.rearKg.toFixed(1)} кг
+                  </span>
+                </div>
+                {result.fork?.pressurePsi != null && (
+                  <div className="mt-1 flex justify-between font-mono text-[11px]">
+                    <span className="text-dim">Давление вилки</span>
+                    <span className="text-acid">{result.fork.pressurePsi} psi</span>
+                  </div>
+                )}
+                <div className="mt-1 flex justify-between font-mono text-[11px]">
+                  <span className="text-dim">Шины перед / зад</span>
+                  <span className="text-ink">
+                    {result.tires.front.psi} / {result.tires.rear.psi} psi
                   </span>
                 </div>
               </div>

@@ -160,17 +160,17 @@ export function GaragePage() {
                       <MiniMetric
                         value={last.result.fork?.pressurePsi ?? last.result.fork?.springRateLbIn ?? '—'}
                         unit={last.result.fork?.pressurePsi ? 'psi' : last.result.fork?.springRateLbIn ? 'lb/in' : ''}
-                        label="Вилка"
+                        label="Вилка дома"
                       />
                       <MiniMetric
                         value={last.result.shock?.pressurePsi ?? last.result.shock?.springRateLbIn ?? '—'}
                         unit={last.result.shock?.pressurePsi ? 'psi' : last.result.shock?.springRateLbIn ? 'lb/in' : ''}
-                        label="Аморт"
+                        label="Аморт дома"
                       />
                       <MiniMetric
                         value={`${last.result.tires.front.psi}/${last.result.tires.rear.psi}`}
                         unit="psi"
-                        label="Шины"
+                        label="Шины дома"
                       />
                     </div>
                   ) : (

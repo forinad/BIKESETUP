@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import type { Rider, Setup, SharedPayload, Weather, WeatherCondition } from '../types'
-import { DEFAULT_PARAMS, DEFAULT_WEATHER } from '../types'
+import type { Rider, Setup, SetupParams, SharedPayload, SurfaceType, Weather, WeatherCondition } from '../types'
+import { DEFAULT_PARAMS, DEFAULT_WEATHER, HOME_TEMP_C } from '../types'
 import { useApp } from '../lib/store'
 import { uid } from '../lib/id'
 import { bikeSignature, calcSetup } from '../lib/calc'
 import { DISCIPLINES } from '../data/disciplines'
-import { WEATHER_CONDITIONS } from '../data/presets'
+import { WEATHER_CONDITIONS, SURFACES, defaultSurface, getSurface } from '../data/presets'
 import { disciplineShort, formatDate } from '../lib/format'
 import { Panel, SectionTitle, Badge } from '../components/ui/Panel'
 import { Button } from '../components/ui/Button'
@@ -34,7 +34,11 @@ export function SetupPage() {
   const fallbackRider = riders.find((r) => r.id === activeRiderId) ?? riders[0]
 
   const [riderId, setRiderId] = useState(loadedSetup?.riderId ?? fallbackRider?.id ?? '')
-  const [params, setParams] = useState(loadedSetup?.params ?? DEFAULT_PARAMS)
+  const [params, setParams] = useState<SetupParams>(() => {
+    const base = loadedSetup?.params ?? DEFAULT_PARAMS
+    const discipline = bike?.discipline ?? 'trail'
+    return { ...base, surface: base.surface ?? defaultSurface(discipline).id }
+  })
   const [weather, setWeather] = useState<Weather>(loadedSetup?.weather ?? DEFAULT_WEATHER)
   const [open, setOpen] = useState({ bike: false, rider: true, conditions: true, position: true })
   const [saveOpen, setSaveOpen] = useState(false)
@@ -87,6 +91,7 @@ export function SetupPage() {
   const isSnapshot = rider.id.startsWith('snapshot_')
   const d = DISCIPLINES[bike.discipline]
   const w = WEATHER_CONDITIONS.find((x) => x.id === weather.condition) ?? WEATHER_CONDITIONS[0]
+  const surface = getSurface(params.surface, bike.discipline)
   const defaultName = `${bike.name} · ${formatDate(Date.now())}`
 
   const updateActiveRider = (patch: Partial<Rider>) => {
@@ -283,7 +288,7 @@ export function SetupPage() {
             title="Условия"
             open={open.conditions}
             onToggle={() => bump('conditions')}
-            summary={`${w.short} · ${weather.tempC > 0 ? '+' : ''}${weather.tempC} °C · ${weather.altitudeM} м`}
+            summary={`${surface.short} · ${w.short} · ${weather.tempC > 0 ? '+' : ''}${weather.tempC} °C · ${weather.altitudeM} м`}
           >
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
@@ -315,6 +320,18 @@ export function SetupPage() {
                 hint={w.note}
               />
 
+              <SelectField
+                label="Где кататься"
+                value={surface.id}
+                onChange={(v) => setParams((p) => ({ ...p, surface: v as SurfaceType }))}
+                options={SURFACES.map((s) => ({ value: s.id, label: s.label }))}
+                hint={`${surface.note} ${
+                  surface.tireAdj === 0
+                    ? 'К давлению в шинах поправки нет.'
+                    : `К давлению в шинах ${surface.tireAdj > 0 ? '+' : '−'}${Math.abs(surface.tireAdj)} psi.`
+                }`}
+              />
+
               <div className="space-y-3 border-t border-line pt-3">
                 <Slider
                   label="Ощущение подвески"
@@ -335,13 +352,13 @@ export function SetupPage() {
                   hint="Чем выше — тем ниже давление в шинах."
                 />
                 <Slider
-                  label="Тип трейла"
+                  label="Характер трейла"
                   value={params.terrain}
                   onChange={(v) => setParams((p) => ({ ...p, terrain: v }))}
                   left="Технично"
                   right="Флоу"
                   format={(v) => `${Math.round(v * 100)}%`}
-                  hint="Техничный рельеф → чуть больше сэга и токенов."
+                  hint="Техничный рельеф → чуть больше сэга и токенов. Покрытие выбирается выше."
                 />
               </div>
             </div>
@@ -403,14 +420,23 @@ export function SetupPage() {
                 </div>
                 {result.fork?.pressurePsi != null && (
                   <div className="mt-1 flex justify-between font-mono text-[11px]">
-                    <span className="text-dim">Давление вилки</span>
-                    <span className="text-acid">{result.fork.pressurePsi} psi</span>
+                    <span className="text-dim">Вилка · дома / улица</span>
+                    <span className="text-acid">
+                      {result.fork.pressurePsi} / {result.fork.ridePressurePsi ?? result.fork.pressurePsi} psi
+                    </span>
                   </div>
                 )}
                 <div className="mt-1 flex justify-between font-mono text-[11px]">
-                  <span className="text-dim">Шины перед / зад</span>
+                  <span className="text-dim">Шины · дома +{HOME_TEMP_C} °C</span>
                   <span className="text-ink">
                     {result.tires.front.psi} / {result.tires.rear.psi} psi
+                  </span>
+                </div>
+                <div className="mt-1 flex justify-between font-mono text-[11px]">
+                  <span className="text-dim">Шины · улица {weather.tempC} °C</span>
+                  <span className="text-ink">
+                    {result.tires.front.ridePsi ?? result.tires.front.psi} /{' '}
+                    {result.tires.rear.ridePsi ?? result.tires.rear.psi} psi
                   </span>
                 </div>
               </div>
@@ -422,7 +448,7 @@ export function SetupPage() {
               type="button"
               className="font-mono text-[10.5px] uppercase tracking-[0.1em] text-dim transition-colors hover:text-ink"
               onClick={() => {
-                setParams(DEFAULT_PARAMS)
+                setParams({ ...DEFAULT_PARAMS, surface: defaultSurface(bike.discipline).id })
                 setWeather(DEFAULT_WEATHER)
               }}
             >

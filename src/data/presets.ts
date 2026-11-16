@@ -2,6 +2,7 @@ import type {
   Bike,
   Discipline,
   LinkageType,
+  SurfaceType,
   TireSetup,
   WeatherCondition,
   WheelSize,
@@ -27,6 +28,97 @@ export const WEATHER_CONDITIONS: WeatherMeta[] = [
 
 export const getWeatherMeta = (id: WeatherCondition): WeatherMeta =>
   WEATHER_CONDITIONS.find((w) => w.id === id) ?? WEATHER_CONDITIONS[0]
+
+export interface SurfaceMeta {
+  id: SurfaceType
+  label: string
+  short: string
+  /** Поправка к давлению в шинах, psi. */
+  tireAdj: number
+  note: string
+}
+
+export const SURFACES: SurfaceMeta[] = [
+  {
+    id: 'asphalt',
+    label: 'Асфальт / город',
+    short: 'Асфальт',
+    tireAdj: 3,
+    note: 'Твёрдое покрытие: выше давление ради наката и защиты обода от ям и бордюров.',
+  },
+  {
+    id: 'gravel',
+    label: 'Гравий / грунтовки',
+    short: 'Гравий',
+    tireAdj: 1.5,
+    note: 'Сыпучий твёрдый грунт: чуть выше давление, чтобы не пробивать покрышку о камни.',
+  },
+  {
+    id: 'hardpack',
+    label: 'Трейлы / укатанный грунт',
+    short: 'Трейлы',
+    tireAdj: 0,
+    note: 'Плотный грунт без сильных корней и грязи — базовый вариант.',
+  },
+  {
+    id: 'forest',
+    label: 'Мягкий лес / листва',
+    short: 'Лес',
+    tireAdj: -0.5,
+    note: 'Мягкий слой и лёгкая колея: чуть ниже давление для пятна контакта.',
+  },
+  {
+    id: 'roots',
+    label: 'Корни и камни',
+    short: 'Корни',
+    tireAdj: -1,
+    note: 'Техничный лес: ниже давление для сцепления на корнях, следите за пробоями.',
+  },
+  {
+    id: 'enduro',
+    label: 'Эндуро-трейлы',
+    short: 'Эндуро',
+    tireAdj: -1.5,
+    note: 'Крутые спуски и жёсткий рельеф: низкое давление под нагрузку и удары.',
+  },
+  {
+    id: 'dh',
+    label: 'ДХ / байк-парк',
+    short: 'ДХ',
+    tireAdj: -2,
+    note: 'Скоростные спуски: максимальное сцепление, но проверяйте пробои и вставки.',
+  },
+  {
+    id: 'dirt',
+    label: 'Дёрт / памп-трек',
+    short: 'Дёрт',
+    tireAdj: 2,
+    note: 'Гладкий хардпак и трамплины: выше давление для поддержки и скорости.',
+  },
+  {
+    id: 'sand',
+    label: 'Песок / пляж',
+    short: 'Песок',
+    tireAdj: -3.5,
+    note: 'Мягкий песок: низкое давление для плавучести, но легко поймать пробой.',
+  },
+]
+
+const DEFAULT_SURFACE: Record<Discipline, SurfaceType> = {
+  xc: 'hardpack',
+  trail: 'hardpack',
+  enduro: 'enduro',
+  dh: 'dh',
+  dirt: 'dirt',
+  gravel: 'gravel',
+}
+
+export const defaultSurface = (discipline: Discipline): SurfaceMeta =>
+  SURFACES.find((s) => s.id === DEFAULT_SURFACE[discipline]) ?? SURFACES.find((s) => s.id === 'hardpack')!
+
+/** Если покрытие не выбрано, подставляем типичное для дисциплины байка. */
+export const getSurface = (id?: SurfaceType, discipline: Discipline = 'trail'): SurfaceMeta =>
+  (id ? SURFACES.find((s) => s.id === id) : undefined) ?? defaultSurface(discipline)
 
 export interface TireSetupMeta {
   id: TireSetup

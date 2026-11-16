@@ -759,13 +759,13 @@ export function BikeEditorPage() {
                 </div>
                 {preview?.fork?.pressurePsi != null && (
                   <div className="panel-flat px-2.5 py-2">
-                    <div className="eyebrow-plain text-[8.5px]">Вилка</div>
+                    <div className="eyebrow-plain text-[8.5px]">Вилка дома</div>
                     <div className="mt-0.5 font-mono text-[13px] text-acid">{preview.fork.pressurePsi} psi</div>
                   </div>
                 )}
                 {preview?.shock && (
                   <div className="panel-flat px-2.5 py-2">
-                    <div className="eyebrow-plain text-[8.5px]">Аморт</div>
+                    <div className="eyebrow-plain text-[8.5px]">Аморт дома</div>
                     <div className="mt-0.5 font-mono text-[13px] text-acid">
                       {preview.shock.pressurePsi ?? preview.shock.springRateLbIn ?? '—'}
                       {preview.shock.pressurePsi ? ' psi' : preview.shock.springRateLbIn ? ' lb/in' : ''}

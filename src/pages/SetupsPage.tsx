@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import type { SharedPayload, Setup } from '../types'
 import { useApp } from '../lib/store'
 import { formatDateTime } from '../lib/format'
-import { WEATHER_CONDITIONS } from '../data/presets'
+import { WEATHER_CONDITIONS, getSurface } from '../data/presets'
 import { Badge, Panel, SectionTitle } from '../components/ui/Panel'
 import { Button } from '../components/ui/Button'
 import { Icon } from '../components/ui/Icon'
@@ -88,6 +88,7 @@ export function SetupsPage() {
         <div className="grid gap-3 md:grid-cols-2">
           {list.map((setup) => {
             const w = WEATHER_CONDITIONS.find((x) => x.id === setup.weather.condition) ?? WEATHER_CONDITIONS[0]
+            const surface = getSurface(setup.params.surface, bike.discipline)
             const r = setup.result
             return (
               <Panel key={setup.id} className="p-4">
@@ -99,17 +100,20 @@ export function SetupsPage() {
                       {setup.riderSnapshot.weightKg} кг
                     </p>
                   </div>
-                  <Badge>{w.short} · {setup.weather.tempC > 0 ? '+' : ''}{setup.weather.tempC}°</Badge>
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                    <Badge>{surface.short}</Badge>
+                    <Badge>{w.short} · {setup.weather.tempC > 0 ? '+' : ''}{setup.weather.tempC}°</Badge>
+                  </div>
                 </div>
 
                 <div className="mt-3 grid grid-cols-3 gap-2">
                   <MiniBox
-                    label="Вилка"
+                    label="Вилка дома"
                     value={r.fork ? (r.fork.pressurePsi ? `${r.fork.pressurePsi} psi` : `${r.fork.springRateLbIn} lb/in`) : '—'}
                     sub={r.fork ? `сэг ${r.fork.sagMm} мм` : 'ригид'}
                   />
                   <MiniBox
-                    label="Аморт"
+                    label="Аморт дома"
                     value={
                       r.shock
                         ? r.shock.pressurePsi
@@ -120,7 +124,7 @@ export function SetupsPage() {
                     sub={r.shock ? `сэг ${r.shock.sagMm} мм` : 'нет'}
                   />
                   <MiniBox
-                    label="Шины"
+                    label="Шины дома"
                     value={`${r.tires.front.psi}/${r.tires.rear.psi}`}
                     sub="psi перед/зад"
                   />

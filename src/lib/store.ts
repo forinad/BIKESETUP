@@ -190,8 +190,11 @@ export const useApp = create<AppState>()(
     }),
     {
       name: 'bikesetup-v1',
-      version: 2,
+      version: 3,
       // v2: убираем демо-байк Norco у тех, кто открывал приложение раньше.
+      // v3: не трогаем профиль райдера. Миграция v2 принудительно ставила
+      // rider_demo и rider_default значения 175 см / 75 кг / 3 кг, из-за чего
+      // у существующих пользователей слетали имя, рост, вес и экипировка.
       migrate: (persisted, version) => {
         if (!persisted || typeof persisted !== 'object') return persisted as AppState
         const s = persisted as AppState
@@ -200,11 +203,7 @@ export const useApp = create<AppState>()(
           const setups = (s.setups ?? []).filter(
             (st) => st.bikeId !== 'bike_demo' && st.id !== 'setup_demo',
           )
-          const riders = (s.riders?.length ? s.riders : seed().riders).map((r) =>
-            r.id === 'rider_demo' || r.id === 'rider_default'
-              ? { ...r, heightCm: 175, weightKg: 75, gearKg: 3 }
-              : r,
-          )
+          const riders = s.riders?.length ? s.riders : seed().riders
           return {
             ...s,
             riders,

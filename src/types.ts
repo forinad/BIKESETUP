@@ -31,6 +31,18 @@ export type LinkageType =
 
 export type WeatherCondition = 'dry' | 'damp' | 'wet' | 'mud' | 'snow'
 
+/** Где кататься: покрытие и тип трассы. Влияет на давление в шинах. */
+export type SurfaceType =
+  | 'asphalt'
+  | 'gravel'
+  | 'hardpack'
+  | 'forest'
+  | 'roots'
+  | 'enduro'
+  | 'dh'
+  | 'dirt'
+  | 'sand'
+
 export type ClickKey = 'lsc' | 'hsc' | 'lsr' | 'hsr'
 
 /** Регулировки, которые реально бывают на вилках и амортах. */
@@ -144,6 +156,8 @@ export interface SetupParams {
   terrain: number
   /** -1 — назад, +1 — вперёд. */
   position: number
+  /** Где кататься. Не указано — берём типичное покрытие для дисциплины байка. */
+  surface?: SurfaceType
 }
 
 export interface Weather {
@@ -166,7 +180,10 @@ export interface ForkResult {
   label: string
   travelMm: number
   stanchionMm: number
+  /** Давление, которое надо накачать дома при +20 °C. */
   pressurePsi: number | null
+  /** Целевое давление на улице при текущей температуре. */
+  ridePressurePsi?: number | null
   springRateLbIn: number | null
   sagMm: number
   sagPct: number
@@ -185,7 +202,10 @@ export interface ShockResult {
   eyeToEyeMm: number
   leverageRatio: number
   progressionPct: number
+  /** Давление, которое надо накачать дома при +20 °C. */
   pressurePsi: number | null
+  /** Целевое давление на улице при текущей температуре. */
+  ridePressurePsi?: number | null
   springRateLbIn: number | null
   springRateIdeal: number | null
   sagMm: number
@@ -199,7 +219,10 @@ export interface ShockResult {
 export interface TireResult {
   size: WheelSize
   widthMm: number
+  /** Давление, которое надо накачать дома при +20 °C. */
   psi: number
+  /** Целевое давление на улице при текущей температуре. */
+  ridePsi?: number
   bar: number
   insert: boolean
   setup: TireSetup
@@ -275,6 +298,9 @@ export interface SharedPayload {
   params: SetupParams
   weather: Weather
 }
+
+/** Температура накачки дома: все давления в карточках приведены к ней. */
+export const HOME_TEMP_C = 20
 
 export const DEFAULT_PARAMS: SetupParams = {
   feel: 0.55,

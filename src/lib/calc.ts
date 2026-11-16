@@ -13,6 +13,7 @@ import type {
   Weather,
   WheelSpec,
 } from '../types'
+import { HOME_TEMP_C } from '../types'
 import { DISCIPLINES } from '../data/disciplines'
 import {
   ADJUSTER_ORDER,
@@ -23,18 +24,32 @@ import {
   getFork,
   getShock,
 } from '../data/components'
-import { getTireSetup, getWeatherMeta } from '../data/presets'
+import { getTireSetup, getWeatherMeta, getSurface } from '../data/presets'
 
-export const ENGINE_VERSION = '1.5.0'
+export const ENGINE_VERSION = '1.7.0'
 
 const KG_TO_LB = 2.2046226
 const MM_PER_IN = 25.4
+/** Атмосферное давление, psi — для пересчёта манометрического давления по закону Гей-Люссака. */
+const ATM_PSI = 14.6959
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v))
 const roundTo = (v: number, step = 1) => Math.round(v / step) * step
 const n = (v: number, digits = 0) => Number(v.toFixed(digits)).toString()
 /** Слагаемое со знаком: «+ 2.0» / «− 1.2» — чтобы формулы читались с отрицательными поправками. */
 const sgn = (v: number, digits = 1) => `${v < 0 ? '−' : '+'} ${n(Math.abs(v), digits)}`
+
+/**
+ * Пересчёт манометрического давления с одной температуры на другую:
+ * (P + Pатм) / T = const. Например, «24 psi на улице при 0 °C» — это
+ * «27 psi дома при +20 °C», если качать в тёплой комнате.
+ */
+export function pressureAtTemp(psi: number, fromTempC: number, toTempC: number): number {
+  const fromK = 273.15 + fromTempC
+  const toK = 273.15 + toTempC
+  if (fromK <= 0 || toK <= 0) return psi
+  return ((psi + ATM_PSI) * toK) / fromK - ATM_PSI
+}
 
 /**
  * Влияние диаметра ног на давление. Сила воздушной пружины = давление × площадь поршня,
@@ -202,13 +217,17 @@ function tirePressure(
   /** Отношение нагрузки на это колесо к нагрузке в нейтральной стойке. */
   loadFactor: number,
 ): {
+  /** Давление для накачки дома при +20 °C. */
   psi: number
+  /** Целевое давление на улице при текущей температуре. */
+  ridePsi: number
   widthIn: number
   setup: ReturnType<typeof getTireSetup>
-  parts: { base: number; load: number; width: number; wheel: number; disc: number; grip: number; weather: number; temp: number; setup: number; insert: number; rear: number }
+  parts: { base: number; load: number; width: number; wheel: number; disc: number; grip: number; weather: number; surface: number; setup: number; insert: number; rear: number; fill: number }
 } {
   const widthIn = wheel.widthMm / MM_PER_IN
   const setupMeta = getTireSetup(wheel.tireSetup)
+  const surfaceMeta = getSurface(params.surface, discipline)
   // База калибрована по бескамерным таблицам (Stan's и др.): для 64 кг ≈ 24–25 psi перед.
   const base = 0.3 * riderKg + 5.5
   // Давление держит вес: при переносе ЦМ вперёд переднее колесо нагружается,
@@ -221,26 +240,30 @@ function tirePressure(
   const grip = -(params.grip - 0.5) * 3.0
   const w = getWeatherMeta(weather.condition)
   const weatherPart = w.tireAdj
-  // На холоде давление в шине падает (P ∝ T): добавляем до 3 psi.
-  const temp = clamp((20 - weather.tempC) * 0.1, -3, 3)
+  const surfacePart = surfaceMeta.tireAdj
   const setupPart = setupMeta.psiAdj
   // Вставка работает только внутри бескамерки/трубки, с камерой её не ставят.
   const insert = wheel.insert && setupMeta.allowsInsert ? -2 : 0
   const rear = which === 'rear' ? 2 - (widthIn - frontWidthIn) * 2 : 0
 
-  const raw = base + load + width + wheelPart + disc + grip + weatherPart + temp + setupPart + insert + rear
-  const psi = clamp(Math.round(raw * 2) / 2, 9, 60)
+  const raw = base + load + width + wheelPart + disc + grip + weatherPart + surfacePart + setupPart + insert + rear
+  // Целевое давление — то, что нужно получить на улице при текущей температуре.
+  const ridePsi = clamp(Math.round(raw * 2) / 2, 9, 60)
+  // Дома при +20 °C воздух теплее и давление выше: пересчитываем по абсолютному давлению.
+  const psi = clamp(Math.round(pressureAtTemp(ridePsi, weather.tempC, HOME_TEMP_C) * 2) / 2, 9, 60)
   return {
     psi,
+    ridePsi,
     widthIn,
     setup: setupMeta,
-    parts: { base, load, width, wheel: wheelPart, disc, grip, weather: weatherPart, temp, setup: setupPart, insert, rear },
+    parts: { base, load, width, wheel: wheelPart, disc, grip, weather: weatherPart, surface: surfacePart, setup: setupPart, insert, rear, fill: psi - ridePsi },
   }
 }
 
 export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather: Weather): CalcResult {
   const d = DISCIPLINES[bike.discipline]
   const weatherMeta = getWeatherMeta(weather.condition)
+  const surfaceMeta = getSurface(params.surface, bike.discipline)
   const totalKg = rider.weightKg + rider.gearKg + Math.max(0, bike.massKg)
   const totalLb = totalKg * KG_TO_LB
   // Вес райдера в полной экипировке — именно его используют таблицы давления
@@ -278,11 +301,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
     const loadKg = balance.frontKg
 
     let pressure: number | null = null
+    let ridePressure: number | null = null
     let springRate: number | null = null
     let rawPressure = 0
-
-    // На холоде воздух сжимается (P ∝ T) — компенсируем, добавляя ~0.34% на °C.
-    const tempForkFactor = clamp(1 + (20 - weather.tempC) * 0.0034, 0.9, 1.15)
 
     if (forkIsAir) {
       // Давление калибруется по ВЕСУ РАЙДЕРА В ЭКИПЕ (как в таблицах RockShox/Fox),
@@ -294,9 +315,11 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
         stanchionFactor(bike.fork.stanchionMm) *
         brandFactor *
         (1 + (0.5 - params.feel) * 0.1) *
-        frontLoadF *
-        tempForkFactor
-      pressure = clamp(roundTo(rawPressure, 1), 15, 200)
+        frontLoadF
+      // Это целевое давление на улице при текущей температуре.
+      ridePressure = clamp(roundTo(rawPressure, 1), 15, 200)
+      // Дома при +20 °C качаем с поправкой на нагрев воздуха в камере.
+      pressure = clamp(roundTo(pressureAtTemp(ridePressure, weather.tempC, HOME_TEMP_C), 1), 15, 200)
       if (rawPressure < 15 || rawPressure > 200) {
         warnings.push({ level: 'warn', text: 'Давление вилки вышло за рабочий диапазон — проверьте вес и диаметр ног.' })
       }
@@ -341,6 +364,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       travelMm: travel,
       stanchionMm: bike.fork.stanchionMm,
       pressurePsi: pressure,
+      ridePressurePsi: ridePressure,
       springRateLbIn: springRate,
       sagMm: Math.round(sagPct * travel),
       sagPct,
@@ -354,13 +378,13 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       }),
     }
 
-    if (forkIsAir && pressure !== null) {
+    if (forkIsAir && pressure !== null && ridePressure !== null) {
       explain.push({
         id: 'fork-pressure',
         title: 'Давление в вилке',
-        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (0.5 - params.feel) * 0.1, 2)} (стиль) × ${n(frontLoadF, 3)} (нагрузка перед) × ${n(tempForkFactor, 3)} (темп. ${weather.tempC} °C) = ${n(rawPressure)} psi`,
-        result: `${pressure} psi ≈ ${n(pressure * 0.0689476, 1)} bar`,
-        hint: `Стартовый ориентир от веса в экипировке, площади ноги и нагрузки на переднее колесо (${n(balance.frontKg, 1)} кг в текущей стойке). Точное давление индивидуально для каждой вилки — доведите сэг до целевого, добавляя по 5 psi.`,
+        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (0.5 - params.feel) * 0.1, 2)} (стиль) × ${n(frontLoadF, 3)} (нагрузка перед) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure)} = ${n(pressure)} psi`,
+        result: `${pressure} psi дома ≈ ${n(pressure * 0.0689476, 1)} bar · на улице ${n(ridePressure, 1)} psi`,
+        hint: `Стартовый ориентир от веса в экипировке, площади ноги и нагрузки на переднее колесо (${n(balance.frontKg, 1)} кг в текущей стойке). Качайте дома при +${HOME_TEMP_C} °C: на улице давление придёт к ${n(ridePressure, 1)} psi. Точное давление индивидуально для каждой вилки — доведите сэг до целевого на улице, добавляя по 5 psi.`,
       })
     }
 
@@ -396,6 +420,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
     const progressF = clamp(1 - ((bike.rear.progressionPct || 25) - 25) * 0.0015, 0.95, 1.03)
 
     let pressure: number | null = null
+    let ridePressure: number | null = null
     let springRate: number | null = null
     let idealSpring: number | null = null
 
@@ -408,16 +433,19 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
         Math.pow(0.28 / sagPct, 0.9) *
         progressF *
         rearLoadF
-      pressure = clamp(roundTo(raw, 5), 40, 360)
+      // Целевое давление на улице при текущей температуре.
+      ridePressure = clamp(roundTo(raw, 5), 40, 360)
+      // Давление для накачки дома при +20 °C: на холоде в камере оно упадёт.
+      pressure = clamp(roundTo(pressureAtTemp(ridePressure, weather.tempC, HOME_TEMP_C), 5), 40, 360)
       if (raw < 40 || raw > 360) {
         warnings.push({ level: 'warn', text: 'Давление аморта вышло за рабочий диапазон — проверьте ход штока и рычажность.' })
       }
       explain.push({
         id: 'shock-pressure',
         title: 'Давление в аморте',
-        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) = ${n(raw)} psi`,
-        result: `${pressure} psi ≈ ${n(pressure * 0.0689476, 1)} bar`,
-        hint: `Чем короче шток и ниже рычажность, тем выше давление. Вес байка в расчёте не участвует, но нагрузка на заднее колесо (${n(balance.rearKg, 1)} кг) — участвует.`,
+        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure, 0)} = ${n(pressure)} psi`,
+        result: `${pressure} psi дома ≈ ${n(pressure * 0.0689476, 1)} bar · на улице ${n(ridePressure)} psi`,
+        hint: `Чем короче шток и ниже рычажность, тем выше давление. Вес байка в расчёте не участвует, но нагрузка на заднее колесо (${n(balance.rearKg, 1)} кг) — участвует. Качайте дома при +${HOME_TEMP_C} °C: на улице давление придёт к ${n(ridePressure)} psi.`,
       })
     } else {
       const ideal =
@@ -463,6 +491,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       leverageRatio: Math.round(lr * 100) / 100,
       progressionPct: bike.rear.progressionPct,
       pressurePsi: pressure,
+      ridePressurePsi: ridePressure,
       springRateLbIn: springRate,
       springRateIdeal: idealSpring,
       sagMm: Math.round(sagPct * stroke),
@@ -514,6 +543,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       size: bike.wheels.front.size,
       widthMm: bike.wheels.front.widthMm,
       psi: frontTireRaw.psi,
+      ridePsi: frontTireRaw.ridePsi,
       bar: Math.round(frontTireRaw.psi * 0.0689476 * 10) / 10,
       insert: bike.wheels.front.insert,
       setup: frontTireRaw.setup.id,
@@ -524,6 +554,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       size: bike.wheels.rear.size,
       widthMm: bike.wheels.rear.widthMm,
       psi: rearTireRaw.psi,
+      ridePsi: rearTireRaw.ridePsi,
       bar: Math.round(rearTireRaw.psi * 0.0689476 * 10) / 10,
       insert: bike.wheels.rear.insert,
       setup: rearTireRaw.setup.id,
@@ -536,9 +567,9 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   explain.push({
     id: 'tires',
     title: 'Давление в шинах',
-    formula: `база 0.30×${n(riderInGearKg, 1)} + 5.5 = ${n(ft.base, 1)} psi · нагрузка ${sgn(ft.load)} · ширина ${sgn(ft.width)} (2.4−${n(frontTireRaw.widthIn, 1)}″) · колесо ${sgn(ft.wheel)} · дисциплина ${sgn(ft.disc)} · грип ${sgn(ft.grip)} · тип ${sgn(ft.setup)} (${frontTireRaw.setup.short}) · погода ${sgn(ft.weather)} · темп. ${sgn(ft.temp)} = ${n(tires.front.psi, 1)} psi`,
-    result: `перед ${n(tires.front.psi, 1)} / зад ${n(tires.rear.psi, 1)} psi`,
-    hint: `Перед: ${frontTireRaw.setup.label.toLowerCase()}. Зад: ${rearTireRaw.setup.label.toLowerCase()}. ${frontTireRaw.setup.note} ${weatherMeta.note}`,
+    formula: `база 0.30×${n(riderInGearKg, 1)} + 5.5 = ${n(ft.base, 1)} psi · нагрузка ${sgn(ft.load)} · ширина ${sgn(ft.width)} (2.4−${n(frontTireRaw.widthIn, 1)}″) · колесо ${sgn(ft.wheel)} · дисциплина ${sgn(ft.disc)} · покрытие ${sgn(ft.surface)} (${surfaceMeta.short}) · грип ${sgn(ft.grip)} · тип ${sgn(ft.setup)} (${frontTireRaw.setup.short}) · погода ${sgn(ft.weather)} = ${n(frontTireRaw.ridePsi, 1)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(ft.fill)} = ${n(tires.front.psi, 1)} psi`,
+    result: `дома ${n(tires.front.psi, 1)} / ${n(tires.rear.psi, 1)} psi · на улице ${n(frontTireRaw.ridePsi, 1)} / ${n(rearTireRaw.ridePsi, 1)} psi`,
+    hint: `Покрытие «${surfaceMeta.label}»: ${surfaceMeta.note} Перед: ${frontTireRaw.setup.label.toLowerCase()}. Зад: ${rearTireRaw.setup.label.toLowerCase()}. ${frontTireRaw.setup.note} ${weatherMeta.note} Качайте дома при +${HOME_TEMP_C} °C: на улице давление придёт к целевому.`,
   })
 
   // ─────────────────────────────── КОКПИТ ───────────────────────────────
@@ -615,12 +646,16 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   // ─────────────────────────────── ПОГОДА ───────────────────────────────
   const sagShift = sagShiftPct(weather.tempC)
   const tempNote =
-    Math.abs(sagShift) < 0.6
-      ? 'Температура близка к комнатной — поправка на нагрев минимальна.'
-      : `Если качать при +20 °C, то при ${weather.tempC} °C давление в воздушных камерах будет примерно на ${n(Math.abs(1 - (273.15 + weather.tempC) / 293.15) * 100, 1)}% ${weather.tempC < 20 ? 'ниже' : 'выше'}, а сэг ${weather.tempC < 20 ? 'вырастет' : 'уменьшится'} на ~${n(Math.abs(sagShift), 1)}%. Настраивайте на улице или после прогрева.`
+    Math.abs(weather.tempC - HOME_TEMP_C) < 0.6
+      ? `Температура на улице близка к комнатной (+${HOME_TEMP_C} °C) — давление дома и на улице одинаковое.`
+      : `Давление в карточках — для накачки дома при +${HOME_TEMP_C} °C. На улице при ${weather.tempC} °C воздух в камерах ${
+          weather.tempC < HOME_TEMP_C ? 'остынет и давление упадёт' : 'нагреется и давление вырастет'
+        } (по абсолютному давлению ~${n(Math.abs(1 - (273.15 + weather.tempC) / (273.15 + HOME_TEMP_C)) * 100, 1)}%, по манометру — сильнее; точные цифры в карточках). Сэг на улице ${
+          weather.tempC < HOME_TEMP_C ? 'вырастет' : 'уменьшится'
+        } на ~${n(Math.abs(sagShift), 1)}% относительно домашней настройки — проверяйте его на улице после стабилизации температуры.`
   const altitudeNote =
     weather.altitudeM > 800
-      ? ` Высота ${weather.altitudeM} м: манометр покажет на ~${n(weather.altitudeM * 0.00012 * 14.5, 1)} psi больше относительно уровня моря — качайте на месте.`
+      ? ` Высота ${weather.altitudeM} м: при большой разнице высот между домом и трейлом на давление влияет и атмосферное — проверяйте манометром на месте.`
       : ''
   const weatherNote = `${weatherMeta.note}${tempNote ? ' ' + tempNote : ''}${altitudeNote}`
 

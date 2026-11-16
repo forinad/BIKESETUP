@@ -1,7 +1,8 @@
 import type { Bike, CalcResult, Rider, SetupParams, SharedPayload, Weather } from '../types'
 import type { CalcResult as Result } from '../types'
+import { HOME_TEMP_C } from '../types'
 import { DISCIPLINES } from '../data/disciplines'
-import { getTireSetup, getWeatherMeta } from '../data/presets'
+import { getTireSetup, getWeatherMeta, getSurface } from '../data/presets'
 import { disciplineLabel, widthLabel, wheelLabel } from '../lib/format'
 import { Badge, Divider, Panel, SectionTitle } from './ui/Panel'
 import { BalanceBar, ClickGrid, Metric, SagBar } from './Metrics'
@@ -22,6 +23,7 @@ export function ResultsView({
 }) {
   const d = DISCIPLINES[bike.discipline]
   const w = getWeatherMeta(weather.condition)
+  const surface = getSurface(params.surface, bike.discipline)
   const riderHeight = rider && 'heightCm' in rider ? rider.heightCm : null
 
   return (
@@ -74,6 +76,7 @@ export function ResultsView({
               <Icon name="cloud" size={12} /> {w.short} · {weather.tempC > 0 ? '+' : ''}
               {weather.tempC} °C
             </Badge>
+            <Badge>{surface.short}</Badge>
             <Badge>{weather.altitudeM} м</Badge>
             <Badge>сэг {Math.round(d.sagFront * 100)}/{Math.round(d.sagRear * 100)}%</Badge>
             <Badge tone="sky">позиция {params.position > 0 ? '+' : ''}{Math.round(params.position * 60)} мм</Badge>
@@ -88,7 +91,7 @@ export function ResultsView({
       <div className="grid gap-3 lg:grid-cols-2">
         <ForkCard result={result} />
         <ShockCard result={result} />
-        <TiresCard result={result} />
+        <TiresCard result={result} weather={weather} surfaceShort={surface.short} />
         <CockpitCard result={result} bike={bike} heightCm={riderHeight} />
       </div>
 
@@ -117,6 +120,7 @@ export function ResultsView({
 
 function ForkCard({ result }: { result: CalcResult }) {
   const fork = result.fork
+  const ridePressure = fork?.ridePressurePsi ?? null
   return (
     <Panel className="p-4 sm:p-5">
       <SectionTitle
@@ -138,10 +142,16 @@ function ForkCard({ result }: { result: CalcResult }) {
             <Metric
               value={fork.pressurePsi ?? fork.springRateLbIn ?? '—'}
               unit={fork.pressurePsi ? 'psi' : 'lb/in'}
-              label={fork.pressurePsi ? 'Давление' : 'Пружина'}
+              label={fork.pressurePsi ? 'Давление дома' : 'Пружина'}
               size="lg"
               tone="acid"
-              sub={fork.pressurePsi ? `${(fork.pressurePsi * 0.0689476).toFixed(1)} bar` : undefined}
+              sub={
+                fork.pressurePsi
+                  ? `${(fork.pressurePsi * 0.0689476).toFixed(1)} bar${
+                      ridePressure != null ? ` · улица ${ridePressure} psi` : ''
+                    }`
+                  : undefined
+              }
             />
             <Metric
               value={fork.sagMm}
@@ -180,6 +190,7 @@ function ForkCard({ result }: { result: CalcResult }) {
 
 function ShockCard({ result }: { result: CalcResult }) {
   const shock = result.shock
+  const ridePressure = shock?.ridePressurePsi ?? null
   return (
     <Panel className="p-4 sm:p-5">
       <SectionTitle
@@ -201,12 +212,14 @@ function ShockCard({ result }: { result: CalcResult }) {
             <Metric
               value={shock.pressurePsi ?? shock.springRateLbIn ?? '—'}
               unit={shock.pressurePsi ? 'psi' : 'lb/in'}
-              label={shock.pressurePsi ? 'Давление' : 'Пружина'}
+              label={shock.pressurePsi ? 'Давление дома' : 'Пружина'}
               size="lg"
               tone="acid"
               sub={
                 shock.pressurePsi
-                  ? `${(shock.pressurePsi * 0.0689476).toFixed(1)} bar`
+                  ? `${(shock.pressurePsi * 0.0689476).toFixed(1)} bar${
+                      ridePressure != null ? ` · улица ${ridePressure} psi` : ''
+                    }`
                   : shock.springRateIdeal
                     ? `идеал ${shock.springRateIdeal}`
                     : undefined
@@ -253,15 +266,23 @@ function ShockCard({ result }: { result: CalcResult }) {
   )
 }
 
-function TiresCard({ result }: { result: CalcResult }) {
+function TiresCard({
+  result,
+  weather,
+  surfaceShort,
+}: {
+  result: CalcResult
+  weather: Weather
+  surfaceShort: string
+}) {
   const items = [
     { key: 'front', label: 'Перед', data: result.tires.front },
     { key: 'rear', label: 'Зад', data: result.tires.rear },
   ] as const
-  const sameSetup = result.tires.front.setup === result.tires.rear.setup
-  const setupBadge = sameSetup
+  const setupBadge = result.tires.front.setup === result.tires.rear.setup
     ? result.tires.front.setupShort
     : `${result.tires.front.setupShort} / ${result.tires.rear.setupShort}`
+  const rideTemp = `${weather.tempC > 0 ? '+' : ''}${weather.tempC}`
   return (
     <Panel className="p-4 sm:p-5">
       <SectionTitle right={<Badge>{setupBadge}</Badge>}>Шины</SectionTitle>
@@ -272,8 +293,13 @@ function TiresCard({ result }: { result: CalcResult }) {
               {data.psi}
               <span className="font-mono text-[10px] font-medium text-dim">psi</span>
             </div>
-            <div className="eyebrow-plain mt-1.5 text-[9px]">{label}</div>
+            <div className="eyebrow-plain mt-1.5 text-[9px]">
+              {label} · дома +{HOME_TEMP_C} °C
+            </div>
             <div className="mt-2 space-y-0.5 font-mono text-[10px] text-dim">
+              {data.ridePsi != null && (
+                <div className="text-muted">на улице {rideTemp} °C → {data.ridePsi} psi</div>
+              )}
               <div>{data.bar} bar</div>
               <div>
                 {wheelLabel(data.size)} · {widthLabel(data.widthMm)}
@@ -287,8 +313,9 @@ function TiresCard({ result }: { result: CalcResult }) {
         ))}
       </div>
       <p className="mt-3 text-[11px] leading-snug text-dim">
-        {sameSetup ? setupBadge : 'Перед и зад посажены по-разному'}: давление под нагрузку на
-        колесо. Измерять на улице — на жаре растёт, на холоде падает.
+        Покрытие «{surfaceShort}». Большая цифра — что накачать дома при +{HOME_TEMP_C} °C. На
+        улице давление изменится, поэтому сэг проверяйте после стабилизации температуры. Расчёт
+        под нагрузку на колесо.
       </p>
     </Panel>
   )

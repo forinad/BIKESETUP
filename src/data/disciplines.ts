@@ -19,7 +19,7 @@ export interface DisciplineMeta {
   barRise: number
   /** Поправка к ширине руля, мм. */
   barWidthAdj: number
-  /** Динамический запас давления в вилке. */
+  /** Динамический запас давления в вилке и аморте — защита от пробоев. */
   pressureReserve: number
   /** Множитель жёсткости пружины аморта. */
   coilFactor: number
@@ -72,7 +72,7 @@ export const DISCIPLINES: Record<Discipline, DisciplineMeta> = {
     tireAdj: -0.5,
     barRise: 30,
     barWidthAdj: 15,
-    pressureReserve: 1.01,
+    pressureReserve: 1.08,
     coilFactor: 1.02,
     massKg: 15.5,
   },
@@ -80,15 +80,15 @@ export const DISCIPLINES: Record<Discipline, DisciplineMeta> = {
     id: 'dh',
     label: 'DH / Freeride',
     short: 'DH',
-    description: 'Парк и даунхилл. Максимальные ходы, высокий сэг, работа на больших скоростях.',
-    sagFront: 0.3,
-    sagRear: 0.35,
+    description: 'Парк и даунхилл. Максимальные ходы, низкий сэг и запас давления на пробои.',
+    sagFront: 0.22,
+    sagRear: 0.27,
     tokensFront: 3,
     tokensRear: 2,
     tireAdj: -1.5,
     barRise: 35,
     barWidthAdj: 25,
-    pressureReserve: 1.03,
+    pressureReserve: 1.2,
     coilFactor: 1.03,
     massKg: 17,
   },
@@ -104,7 +104,7 @@ export const DISCIPLINES: Record<Discipline, DisciplineMeta> = {
     tireAdj: 4,
     barRise: 40,
     barWidthAdj: 15,
-    pressureReserve: 1.02,
+    pressureReserve: 1.08,
     coilFactor: 0.94,
     massKg: 12.5,
   },

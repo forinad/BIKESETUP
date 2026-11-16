@@ -26,7 +26,7 @@ import {
 } from '../data/components'
 import { getTireSetup, getWeatherMeta, getSurface } from '../data/presets'
 
-export const ENGINE_VERSION = '1.7.0'
+export const ENGINE_VERSION = '1.8.0'
 
 const KG_TO_LB = 2.2046226
 const MM_PER_IN = 25.4
@@ -148,6 +148,35 @@ function sagShiftPct(tempC: number): number {
   return (Math.pow(1 / ratio, 0.45) - 1) * 100
 }
 
+/**
+ * Температурная модель демпфера.
+ *
+ * Масло в демпфере густеет на холоде: для типичного 5–7.5W с индексом вязкости
+ * 150–200 вязкость растёт примерно вдвое на каждые 20 °C похолодания. Сила
+ * демпфирования зависит от вязкости не линейно (часть потока идёт через шайбы
+ * и щели), поэтому берём степень 0.75. Кликер от открытого до закрытого
+ * перекрывает около 3.5× по силе — так переводим изменение вязкости в клики.
+ */
+const OIL_VISC_TEMP_COEF = 0.035
+const DAMPING_VISC_EXP = 0.75
+const CLICKER_RANGE_RATIO = 3.5
+
+/**
+ * Сдвиг в сторону ОТКРЫТИЯ из-за температуры масла, в долях полного диапазона.
+ * Холод → масло гуще → положительный сдвиг (надо открыть отверстия).
+ * Тепло → масло жиже → отрицательный (надо прикрыть).
+ * Клики считаются от открытого, поэтому в clickSettings этот сдвиг вычитается.
+ * Низкоскоростной отскок сильнее всех зависит от вязкости; высокоскоростные
+ * шайбы и сжатие — слабее.
+ */
+function tempOpenShift(tempC: number, key: AdjusterKey): number {
+  const viscosityRatio = Math.exp(OIL_VISC_TEMP_COEF * (HOME_TEMP_C - tempC))
+  const dampingRatio = Math.pow(viscosityRatio, DAMPING_VISC_EXP)
+  const sensitivity =
+    key === 'lsr' || key === 'lsc' ? 1 : key === 'hsr' ? 0.6 : key === 'hsc' ? 0.5 : 0.8
+  return (Math.log(dampingRatio) / Math.log(CLICKER_RANGE_RATIO)) * sensitivity
+}
+
 function clickSettings(
   adjusters: ForkAdjuster[],
   opts: { weightKg: number; feel: number; tempC: number; isShock?: boolean },
@@ -156,8 +185,6 @@ function clickSettings(
   const weightAdj = (opts.weightKg / 78 - 1) * 0.12
   // Клики зависят от веса, стиля и ТЕМПЕРАТУРЫ. Состояние трейла (сухо/снег)
   // меняет давление в шинах и целевой сэг, но на демпфирование не влияет.
-  // Холод → масло гуще → демпфирование медленнее; открываем регулировки.
-  const tempAdj = clamp((opts.tempC - 20) * 0.003, -0.09, 0.05)
   const sorted = [...adjusters].sort(
     (a, b) => ADJUSTER_ORDER.indexOf(a.key) - ADJUSTER_ORDER.indexOf(b.key),
   )
@@ -176,18 +203,27 @@ function clickSettings(
     const highSpeed = adj.key === 'hsc' || adj.key === 'hsr'
     let frac: number
     if (adj.key === 'preload') {
-      frac = 0.35 + (opts.weightKg / 80 - 1) * 0.25 + (0.5 - opts.feel) * 0.2
+      // Преднатяг пружины: больше веса и жёстче характер → больше преднатяга.
+      frac = 0.35 + (opts.weightKg / 80 - 1) * 0.25 + (opts.feel - 0.5) * 0.2
     } else {
-      frac = compression
-        ? 0.55 + (opts.feel - 0.5) * 0.3 + weightAdj
-        : 0.52 + (0.5 - opts.feel) * 0.22 + weightAdj
+      // База — середина диапазона для нейтрального райдера. Клики считаем от
+      // ОТКРЫТОГО: меньше кликов = быстрее отскок и мягче сжатие.
+      if (compression) {
+        // Жёстче характер и больше вес → сильнее сопротивление сжатию → больше кликов.
+        frac = 0.55 + (opts.feel - 0.5) * 0.3 + weightAdj
+      } else {
+        // Жёстче характер → быстрее отскок → меньше кликов. Больше вес → сильнее
+        // пружина и больше энергии, поэтому отскок придерживаем → больше кликов.
+        frac = 0.52 + (0.5 - opts.feel) * 0.22 + weightAdj
+      }
       if (adj.key === 'abs') frac += 0.02
       if (highSpeed) frac += 0.04
       else if (adj.key !== 'abs') frac += 0.02
-      // Температурная поправка: на холоде открываем демпфер (быстрее отскок / мягче сжатие).
-      frac += tempAdj
+      // Холод → масло гуще → демпфирование сильнее → отверстия открываем,
+      // то есть кликов от открытого становится МЕНЬШЕ. В тепле — наоборот.
+      frac -= tempOpenShift(opts.tempC, adj.key)
     }
-    frac = clamp(frac, 0.18, 0.86)
+    frac = clamp(frac, 0.02, 0.98)
     out.push({
       key: adj.key,
       value: Math.max(1, Math.round(maxClick * frac)),
@@ -310,12 +346,15 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       // а не по общему весу с байком. База ≈ 1 psi на 1 кг для 36-мм ноги:
       // тоньше нога (32 мм) — давление выше, толще (38–40 мм) — ниже.
       // Множитель нагрузки учитывает стойку: сдвиг ЦМ вперёд грузит вилку.
+      // pressureReserve — дисциплинарный запас на пробои. Для DH он выше:
+      // длинноходную вилку качают плотнее, чтобы не пробивать на приземлениях.
       rawPressure =
         riderInGearKg *
         stanchionFactor(bike.fork.stanchionMm) *
         brandFactor *
-        (1 + (0.5 - params.feel) * 0.1) *
-        frontLoadF
+        (1 + (params.feel - 0.5) * 0.1) *
+        frontLoadF *
+        d.pressureReserve
       // Это целевое давление на улице при текущей температуре.
       ridePressure = clamp(roundTo(rawPressure, 1), 15, 200)
       // Дома при +20 °C качаем с поправкой на нагрев воздуха в камере.
@@ -382,7 +421,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       explain.push({
         id: 'fork-pressure',
         title: 'Давление в вилке',
-        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (0.5 - params.feel) * 0.1, 2)} (стиль) × ${n(frontLoadF, 3)} (нагрузка перед) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure)} = ${n(pressure)} psi`,
+        formula: `${n(riderInGearKg, 1)} кг в экипе × ${n(stanchionFactor(bike.fork.stanchionMm), 2)} (нога ${bike.fork.stanchionMm} мм) × ${n(brandFactor, 2)} (бренд) × ${n(1 + (params.feel - 0.5) * 0.1, 2)} (стиль) × ${n(frontLoadF, 3)} (нагрузка перед) × ${n(d.pressureReserve, 2)} (запас ${d.short}) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure)} = ${n(pressure)} psi`,
         result: `${pressure} psi дома ≈ ${n(pressure * 0.0689476, 1)} bar · на улице ${n(ridePressure, 1)} psi`,
         hint: `Стартовый ориентир от веса в экипировке, площади ноги и нагрузки на переднее колесо (${n(balance.frontKg, 1)} кг в текущей стойке). Качайте дома при +${HOME_TEMP_C} °C: на улице давление придёт к ${n(ridePressure, 1)} psi. Точное давление индивидуально для каждой вилки — доведите сэг до целевого на улице, добавляя по 5 psi.`,
       })
@@ -432,7 +471,8 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
         Math.pow(2.5 / lr, 0.35) *
         Math.pow(0.28 / sagPct, 0.9) *
         progressF *
-        rearLoadF
+        rearLoadF *
+        d.pressureReserve
       // Целевое давление на улице при текущей температуре.
       ridePressure = clamp(roundTo(raw, 5), 40, 360)
       // Давление для накачки дома при +20 °C: на холоде в камере оно упадёт.
@@ -443,7 +483,7 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
       explain.push({
         id: 'shock-pressure',
         title: 'Давление в аморте',
-        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure, 0)} = ${n(pressure)} psi`,
+        formula: `2.2 × ${n(riderInGearKg, 1)} кг в экипе × (65/${stroke})^0.7 × (2.5/${n(lr, 2)})^0.35 × (28/${n(sagPct * 100, 1)})^0.9 × ${n(progressF, 2)} × ${n(rearLoadF, 3)} (нагрузка зад) × ${n(d.pressureReserve, 2)} (запас ${d.short}) = ${n(ridePressure)} psi на улице ${weather.tempC} °C · дома +${HOME_TEMP_C} °C ${sgn(pressure - ridePressure, 0)} = ${n(pressure)} psi`,
         result: `${pressure} psi дома ≈ ${n(pressure * 0.0689476, 1)} bar · на улице ${n(ridePressure)} psi`,
         hint: `Чем короче шток и ниже рычажность, тем выше давление. Вес байка в расчёте не участвует, но нагрузка на заднее колесо (${n(balance.rearKg, 1)} кг) — участвует. Качайте дома при +${HOME_TEMP_C} °C: на улице давление придёт к ${n(ridePressure)} psi.`,
       })
@@ -618,6 +658,12 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
   if (rider.weightKg < 45 || rider.weightKg > 125) {
     warnings.push({ level: 'info', text: 'Вес райдера вне типичного диапазона 45–125 кг: проверяйте рекомендации особенно внимательно.' })
   }
+  if (weather.tempC <= 2) {
+    warnings.push({
+      level: 'info',
+      text: `На морозе ${weather.tempC} °C масло в демпфере густеет, поэтому отскок и низкоскоростное сжатие открыты почти полностью — кликов от открытого остаётся минимум. Если отскок всё равно ватный даже полностью открытым, масло слишком густое для такой температуры: нужен сервис или более жидкое масло.`,
+    })
+  }
   if (shock && bike.fork.travelMm - bike.rear.travelMm > 40) {
     warnings.push({ level: 'info', text: 'Ход вилки заметно больше хода зада: баланс будет смещён вперёд.' })
   }
@@ -652,24 +698,29 @@ export function calcSetup(bike: Bike, rider: Rider, params: SetupParams, weather
           weather.tempC < HOME_TEMP_C ? 'остынет и давление упадёт' : 'нагреется и давление вырастет'
         } (по абсолютному давлению ~${n(Math.abs(1 - (273.15 + weather.tempC) / (273.15 + HOME_TEMP_C)) * 100, 1)}%, по манометру — сильнее; точные цифры в карточках). Сэг на улице ${
           weather.tempC < HOME_TEMP_C ? 'вырастет' : 'уменьшится'
-        } на ~${n(Math.abs(sagShift), 1)}% относительно домашней настройки — проверяйте его на улице после стабилизации температуры.`
+        } на ~${n(Math.abs(sagShift), 1)}% относительно домашней настройки — проверяйте его на улице после стабилизации температуры. Клики демпфирования рассчитаны под уличную температуру: ${
+          weather.tempC < HOME_TEMP_C ? 'на холоде масло гуще, поэтому отскок и сжатие открыты сильнее' : 'в тепле масло жиже, поэтому демпфер прикрыт'
+        }.`
   const altitudeNote =
     weather.altitudeM > 800
       ? ` Высота ${weather.altitudeM} м: при большой разнице высот между домом и трейлом на давление влияет и атмосферное — проверяйте манометром на месте.`
       : ''
   const weatherNote = `${weatherMeta.note}${tempNote ? ' ' + tempNote : ''}${altitudeNote}`
 
+  const viscosityRatio = Math.exp(OIL_VISC_TEMP_COEF * (HOME_TEMP_C - weather.tempC))
+  const dampingRatio = Math.pow(viscosityRatio, DAMPING_VISC_EXP)
+  const openShift = clamp(tempOpenShift(weather.tempC, 'lsr'), -1, 1)
   explain.push({
     id: 'clicks-temp',
     title: 'Температура и демпфирование',
-    formula: `поправка кликов = (${weather.tempC} °C − 20) × 0.3% = ${n((weather.tempC - 20) * 0.3, 1)}%`,
+    formula: `вязкость масла ${n(viscosityRatio, 2)}× относительно +${HOME_TEMP_C} °C → демпфирование ${n(dampingRatio, 2)}×. Полный ход кликера ≈${CLICKER_RANGE_RATIO}×, поэтому сдвигаем кликер на ${n(Math.abs(openShift) * 100, 0)}% диапазона ${openShift >= 0 ? 'в сторону открытия' : 'в сторону закрытия'}`,
     result:
-      weather.tempC < 20
-        ? 'на холоде масло гуще — демпфирование открывается на несколько кликов'
-        : weather.tempC > 20
-          ? 'в тепле масло жиже — демпфирование чуть прикрывается'
-          : 'температура нейтральная — поправка к кликам нулевая',
-    hint: 'Клики отскока считаются от быстрого к медленному: меньше кликов — быстрее отскок.',
+      weather.tempC < HOME_TEMP_C - 3
+        ? 'на холоде масло гуще — отскок и сжатие открываются почти полностью (минимум кликов)'
+        : weather.tempC > HOME_TEMP_C + 3
+          ? 'в тепле масло жиже — демпфер прикрывается (кликов больше)'
+          : 'температура близка к комнатной — поправка минимальна',
+    hint: 'Клики считаются от полностью открытого: меньше кликов — быстрее отскок и мягче сжатие, больше — медленнее и жёстче. Если на морозе даже полностью открытый отскок остаётся ватным, масло слишком густое для этих условий — нужен сервис или более жидкое масло.',
   })
   explain.push({
     id: 'mass',

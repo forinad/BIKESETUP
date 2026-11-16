@@ -175,7 +175,7 @@ function ForkCard({ result }: { result: CalcResult }) {
           />
 
           <Divider className="my-4" />
-          <div className="eyebrow-plain text-[9px]">Демпфирование · клики от закрытого</div>
+          <div className="eyebrow-plain text-[9px]">Демпфирование · клики от открытого</div>
           <ClickGrid clicks={fork.clicks} />
         </>
       ) : (
@@ -253,7 +253,7 @@ function ShockCard({ result }: { result: CalcResult }) {
           </div>
 
           <Divider className="my-4" />
-          <div className="eyebrow-plain text-[9px]">Демпфирование · клики от закрытого</div>
+          <div className="eyebrow-plain text-[9px]">Демпфирование · клики от открытого</div>
           <ClickGrid clicks={shock.clicks} />
         </>
       ) : (
